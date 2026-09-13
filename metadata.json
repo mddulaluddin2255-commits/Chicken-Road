@@ -1,0 +1,7 @@
+{
+  "name": "Chicken Road Points",
+  "description": "Mobile-responsive crash-style arcade chicken crossing game with virtual points, multiplier progression, and rewarded ads.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
+
