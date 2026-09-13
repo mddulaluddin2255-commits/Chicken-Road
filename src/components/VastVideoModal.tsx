@@ -18,7 +18,9 @@ export const VastVideoModal: React.FC<VastVideoModalProps> = ({
   const [adData, setAdData] = useState<VastAdResult | null>(null);
   const [mediaFileIndex, setMediaFileIndex] = useState(0);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
-  const [timeLeft, setTimeLeft] = useState(15);
+  const REQUIRED_WATCH_SECONDS = 15;
+  const [timeLeft, setTimeLeft] = useState(REQUIRED_WATCH_SECONDS);
+  const [canClaim, setCanClaim] = useState(false);
   const [canClose, setCanClose] = useState(false);
   const [isCompleted, setIsCompleted] = useState(false);
   // Default to muted true so mobile Chrome autoplay policy never rejects playback
@@ -42,9 +44,11 @@ export const VastVideoModal: React.FC<VastVideoModalProps> = ({
       setMediaFileIndex(0);
       setErrorMsg(null);
       setIsCompleted(false);
+      setCanClaim(false);
       setCanClose(false);
       setRewardClaimed(false);
       setShowPlayOverlay(false);
+      setTimeLeft(REQUIRED_WATCH_SECONDS);
       return;
     }
 
@@ -53,7 +57,11 @@ export const VastVideoModal: React.FC<VastVideoModalProps> = ({
     setLoading(true);
     setErrorMsg(null);
     setMediaFileIndex(0);
+    setCanClaim(false);
+    setCanClose(false);
+    setRewardClaimed(false);
     setShowPlayOverlay(false);
+    setTimeLeft(REQUIRED_WATCH_SECONDS);
 
     loadVastAd()
       .then((data) => {
@@ -68,8 +76,7 @@ export const VastVideoModal: React.FC<VastVideoModalProps> = ({
         }
 
         setAdData(data);
-        const duration = Math.min(30, Math.max(10, data.durationSeconds || 15));
-        setTimeLeft(duration);
+        setTimeLeft(REQUIRED_WATCH_SECONDS);
         setLoading(false);
 
         // Send impression tracking
@@ -80,25 +87,32 @@ export const VastVideoModal: React.FC<VastVideoModalProps> = ({
         setAdData({
           success: true,
           mediaFiles: [{ url: FALLBACK_SPONSORED_VIDEO, type: 'video/mp4' }],
-          durationSeconds: 15,
+          durationSeconds: REQUIRED_WATCH_SECONDS,
           title: 'Sponsored Arcade Partner',
           impressionUrls: [],
           trackingEvents: [],
           isFallback: true,
         });
-        setTimeLeft(15);
+        setTimeLeft(REQUIRED_WATCH_SECONDS);
         setLoading(false);
       });
   }, [isOpen]);
 
-  // Handle countdown timer & quartile tracking during playback
+  // Handle 15-second countdown timer & quartile tracking during playback
   const handleTimeUpdate = () => {
     if (!videoRef.current || isCompleted) return;
     const current = videoRef.current.currentTime;
-    const duration = videoRef.current.duration || (adData?.durationSeconds ?? 15);
+    const duration = videoRef.current.duration || REQUIRED_WATCH_SECONDS;
 
-    const remaining = Math.max(0, Math.ceil(duration - current));
+    const remaining = Math.max(0, Math.ceil(REQUIRED_WATCH_SECONDS - current));
     setTimeLeft(remaining);
+
+    // After 15 seconds of watch time, enable DONE claim option
+    if ((current >= REQUIRED_WATCH_SECONDS || videoRef.current.ended) && !canClaim) {
+      setCanClaim(true);
+      setCanClose(true);
+      setTimeLeft(0);
+    }
 
     // Quartile tracking
     if (adData && duration > 0) {
@@ -119,17 +133,28 @@ export const VastVideoModal: React.FC<VastVideoModalProps> = ({
   };
 
   const handleVideoCompleted = () => {
-    if (rewardClaimed) return;
-    setIsCompleted(true);
+    // If video finishes, make DONE option available
+    setCanClaim(true);
     setCanClose(true);
     setTimeLeft(0);
+  };
+
+  // Called when user clicks "DONE" button
+  const handleDoneClaim = () => {
+    if (rewardClaimed) {
+      onClose();
+      return;
+    }
     setRewardClaimed(true);
+    setIsCompleted(true);
+    setCanClose(true);
 
     // Send complete tracking
     adData?.trackingEvents.filter((t) => t.event === 'complete').forEach((t) => sendTrackingBeacon(t.url));
 
     playClaimSound();
     onRewardEarned(rewardTokenRef.current);
+    onClose();
   };
 
   // Video error recovery handler
@@ -169,13 +194,17 @@ export const VastVideoModal: React.FC<VastVideoModalProps> = ({
 
   const handleCloseAttempt = () => {
     playClickSound();
-    if (!isCompleted && !errorMsg) {
+    if (!canClaim && !errorMsg) {
       const confirmLeave = window.confirm(
-        'Warning: You must finish watching the video to earn the +200 Virtual Points reward. Leave now?'
+        'Warning: You must watch at least 15 seconds to earn the +200 Virtual Points reward. Leave now?'
       );
       if (!confirmLeave) return;
+      onClose();
+    } else if (canClaim && !rewardClaimed) {
+      handleDoneClaim();
+    } else {
+      onClose();
     }
-    onClose();
   };
 
   if (!isOpen) return null;
@@ -220,7 +249,7 @@ export const VastVideoModal: React.FC<VastVideoModalProps> = ({
                   ? 'bg-emerald-600/30 text-emerald-300 hover:bg-emerald-600/50'
                   : 'bg-slate-800/80 text-slate-400 hover:text-white'
               }`}
-              title="Close Ad"
+              title={canClaim ? 'Claim & Close' : 'Close Ad'}
             >
               <X className="w-4 h-4" />
             </button>
@@ -256,6 +285,16 @@ export const VastVideoModal: React.FC<VastVideoModalProps> = ({
 
           {!loading && !errorMsg && (
             <>
+              {/* Progress bar tracking 15 seconds */}
+              <div className="absolute top-0 left-0 right-0 h-1 bg-slate-800/80 z-20 overflow-hidden">
+                <div
+                  className="h-full bg-gradient-to-r from-amber-400 to-emerald-400 transition-all duration-200"
+                  style={{
+                    width: `${Math.min(100, ((REQUIRED_WATCH_SECONDS - timeLeft) / REQUIRED_WATCH_SECONDS) * 100)}%`,
+                  }}
+                />
+              </div>
+
               <video
                 key={currentMediaUrl}
                 ref={videoRef}
@@ -268,13 +307,13 @@ export const VastVideoModal: React.FC<VastVideoModalProps> = ({
                 onError={handleVideoError}
                 onPlay={() => setShowPlayOverlay(false)}
                 onPause={() => {
-                  if (!isCompleted) setShowPlayOverlay(true);
+                  if (!isCompleted && !canClaim) setShowPlayOverlay(true);
                 }}
                 className="w-full h-full object-contain"
               />
 
               {/* Tap to Unmute Banner if muted */}
-              {isMuted && !isCompleted && (
+              {isMuted && !canClaim && !isCompleted && (
                 <button
                   onClick={() => setIsMuted(false)}
                   className="absolute bottom-3 right-3 bg-black/80 hover:bg-black text-amber-300 text-[11px] font-bold px-3 py-1.5 rounded-full border border-amber-500/40 flex items-center gap-1.5 backdrop-blur-sm z-20 active:scale-95 transition"
@@ -285,7 +324,7 @@ export const VastVideoModal: React.FC<VastVideoModalProps> = ({
               )}
 
               {/* Tap to Play Overlay if mobile browser blocked autoplay */}
-              {showPlayOverlay && !isCompleted && (
+              {showPlayOverlay && !canClaim && !isCompleted && (
                 <div
                   onClick={handleManualPlay}
                   className="absolute inset-0 bg-black/60 backdrop-blur-xs flex flex-col items-center justify-center gap-2 cursor-pointer z-20"
@@ -300,43 +339,44 @@ export const VastVideoModal: React.FC<VastVideoModalProps> = ({
               )}
 
               {/* In-video live countdown badge */}
-              {!isCompleted && (
+              {!canClaim && (
                 <div className="absolute top-3 left-3 bg-black/80 backdrop-blur-md px-3 py-1 rounded-full border border-white/10 flex items-center gap-2 z-10">
-                  <div className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                  <div className="w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
                   <span className="text-xs font-mono font-bold text-white">
-                    Reward in: {timeLeft}s
+                    Done in: {timeLeft}s
                   </span>
                 </div>
               )}
-            </>
-          )}
 
-          {/* Reward Earned Overlay */}
-          {isCompleted && (
-            <div className="absolute inset-0 bg-slate-950/90 backdrop-blur-sm flex flex-col items-center justify-center p-6 text-center animate-fadeIn z-30">
-              <div className="w-16 h-16 rounded-full bg-emerald-500/20 border-2 border-emerald-400 flex items-center justify-center mb-3 animate-bounce">
-                <CheckCircle className="w-10 h-10 text-emerald-400" />
-              </div>
-              <h3 className="text-xl font-black text-white uppercase tracking-wide">
-                AD COMPLETED!
-              </h3>
-              <p className="text-2xl font-black text-amber-400 mt-1 drop-shadow font-mono-numbers">
-                +200 Virtual Points
-              </p>
-              <p className="text-xs text-slate-300 mt-2 max-w-xs">
-                Points have been credited to your balance. Ready for your next road cross!
-              </p>
-              <button
-                id="ad-collect-close-btn"
-                onClick={() => {
-                  playClickSound();
-                  onClose();
-                }}
-                className="mt-5 w-full max-w-xs py-3 px-6 rounded-xl font-black text-sm tracking-wider uppercase text-slate-950 bg-gradient-to-r from-emerald-400 to-emerald-500 hover:from-emerald-300 hover:to-emerald-400 shadow-lg shadow-emerald-500/30 active:scale-95 transition"
-              >
-                CLAIM & RETURN TO GAME
-              </button>
-            </div>
+              {/* 15 Seconds Reached: DONE Option Card */}
+              {canClaim && !rewardClaimed && (
+                <div className="absolute inset-0 bg-slate-950/85 backdrop-blur-sm flex flex-col items-center justify-center p-6 text-center z-30 animate-fadeIn">
+                  <div className="w-14 h-14 rounded-full bg-emerald-500/20 border-2 border-emerald-400 flex items-center justify-center mb-2 animate-bounce">
+                    <CheckCircle className="w-8 h-8 text-emerald-400" />
+                  </div>
+                  <span className="px-2.5 py-0.5 bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 rounded-full text-[11px] font-black tracking-wider uppercase">
+                    15s Watched!
+                  </span>
+                  <h3 className="text-xl font-black text-white uppercase tracking-wide mt-1.5">
+                    Ready to Claim Reward
+                  </h3>
+                  <p className="text-2xl font-black text-amber-400 mt-0.5 font-mono drop-shadow">
+                    +200 Virtual Points
+                  </p>
+                  <p className="text-xs text-slate-300 mt-1 max-w-xs">
+                    Click Done below to claim your points and add them to your balance.
+                  </p>
+                  <button
+                    id="ad-done-claim-btn"
+                    onClick={handleDoneClaim}
+                    className="mt-4 w-full max-w-xs py-3 px-6 rounded-xl font-black text-base tracking-widest uppercase text-slate-950 bg-gradient-to-r from-emerald-400 via-emerald-300 to-emerald-500 hover:from-emerald-300 hover:to-emerald-400 shadow-xl shadow-emerald-500/40 active:scale-95 transition flex items-center justify-center gap-2 cursor-pointer"
+                  >
+                    <CheckCircle className="w-5 h-5 fill-current" />
+                    DONE
+                  </button>
+                </div>
+              )}
+            </>
           )}
         </div>
 
@@ -347,9 +387,21 @@ export const VastVideoModal: React.FC<VastVideoModalProps> = ({
             <span>•</span>
             <span className="text-amber-400/90 font-medium">+200 Virtual Points</span>
           </div>
-          <span className="text-[11px] text-slate-500">
-            Official VAST integration • No Cash Value
-          </span>
+
+          {canClaim && !rewardClaimed ? (
+            <button
+              id="ad-footer-done-btn"
+              onClick={handleDoneClaim}
+              className="w-full sm:w-auto px-5 py-2 rounded-lg font-black text-xs uppercase tracking-wider bg-emerald-400 hover:bg-emerald-300 text-slate-950 shadow-lg shadow-emerald-500/30 active:scale-95 transition flex items-center justify-center gap-1.5 cursor-pointer animate-pulse"
+            >
+              <CheckCircle className="w-4 h-4 fill-current" />
+              DONE
+            </button>
+          ) : (
+            <span className="text-[11px] text-slate-400 font-mono">
+              Watch 15s for reward ({timeLeft}s remaining)
+            </span>
+          )}
         </div>
       </div>
     </div>
