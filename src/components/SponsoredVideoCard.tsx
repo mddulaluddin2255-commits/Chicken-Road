@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Volume2, VolumeX, Play, ExternalLink } from 'lucide-react';
-import { loadVastAd, VastAdResult } from '../services/vastService';
+import { loadVastAd, VastAdResult, FALLBACK_SPONSORED_VIDEO } from '../services/vastService';
 
 export const SponsoredVideoCard: React.FC = () => {
   const [adData, setAdData] = useState<VastAdResult | null>(null);
+  const [mediaFileIndex, setMediaFileIndex] = useState(0);
   const [isMuted, setIsMuted] = useState(true);
   const [isPlaying, setIsPlaying] = useState(false);
   const [hasError, setHasError] = useState(false);
@@ -15,26 +16,64 @@ export const SponsoredVideoCard: React.FC = () => {
         if (data.mediaFiles && data.mediaFiles.length > 0) {
           setAdData(data);
         } else {
-          setHasError(true);
+          setAdData({
+            success: true,
+            mediaFiles: [{ url: FALLBACK_SPONSORED_VIDEO, type: 'video/mp4' }],
+            durationSeconds: 15,
+            title: 'Featured Sponsor • Chicken Road Arcade',
+            clickThroughUrl: 'https://crookedagreement.com',
+            impressionUrls: [],
+            trackingEvents: [],
+            isFallback: true,
+          });
         }
       })
       .catch(() => {
-        setHasError(true);
+        setAdData({
+          success: true,
+          mediaFiles: [{ url: FALLBACK_SPONSORED_VIDEO, type: 'video/mp4' }],
+          durationSeconds: 15,
+          title: 'Featured Sponsor • Chicken Road Arcade',
+          clickThroughUrl: 'https://crookedagreement.com',
+          impressionUrls: [],
+          trackingEvents: [],
+          isFallback: true,
+        });
       });
   }, []);
+
+  const handleVideoError = () => {
+    if (!adData?.mediaFiles) {
+      setHasError(true);
+      return;
+    }
+
+    const nextIndex = mediaFileIndex + 1;
+    if (nextIndex < adData.mediaFiles.length) {
+      setMediaFileIndex(nextIndex);
+    } else if (adData.mediaFiles[mediaFileIndex]?.url !== FALLBACK_SPONSORED_VIDEO) {
+      setAdData({
+        ...adData,
+        mediaFiles: [{ url: FALLBACK_SPONSORED_VIDEO, type: 'video/mp4' }],
+      });
+      setMediaFileIndex(0);
+    } else {
+      setHasError(true);
+    }
+  };
 
   const handlePlayToggle = () => {
     if (!videoRef.current) return;
     if (videoRef.current.paused) {
-      videoRef.current.play().catch(() => {
-        // autoplay restriction
-      });
+      videoRef.current.play().catch(() => {});
       setIsPlaying(true);
     } else {
       videoRef.current.pause();
       setIsPlaying(false);
     }
   };
+
+  const currentMediaUrl = adData?.mediaFiles?.[mediaFileIndex]?.url || FALLBACK_SPONSORED_VIDEO;
 
   return (
     <div
@@ -59,14 +98,16 @@ export const SponsoredVideoCard: React.FC = () => {
         {!hasError && adData && adData.mediaFiles.length > 0 ? (
           <>
             <video
+              key={currentMediaUrl}
               ref={videoRef}
-              src={adData.mediaFiles[0].url}
+              src={currentMediaUrl}
               playsInline
               muted={isMuted}
               loop
               autoPlay
               onPlay={() => setIsPlaying(true)}
               onPause={() => setIsPlaying(false)}
+              onError={handleVideoError}
               className="w-full h-full object-cover"
             />
 

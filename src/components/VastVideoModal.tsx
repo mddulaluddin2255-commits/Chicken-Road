@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { X, Volume2, VolumeX, CheckCircle, AlertCircle, Loader2 } from 'lucide-react';
-import { loadVastAd, sendTrackingBeacon, VastAdResult } from '../services/vastService';
+import { X, Volume2, VolumeX, CheckCircle, AlertCircle, Loader2, Play } from 'lucide-react';
+import { loadVastAd, sendTrackingBeacon, VastAdResult, FALLBACK_SPONSORED_VIDEO } from '../services/vastService';
 import { playClaimSound, playClickSound } from '../utils/audio';
 
 interface VastVideoModalProps {
@@ -16,12 +16,15 @@ export const VastVideoModal: React.FC<VastVideoModalProps> = ({
 }) => {
   const [loading, setLoading] = useState(true);
   const [adData, setAdData] = useState<VastAdResult | null>(null);
+  const [mediaFileIndex, setMediaFileIndex] = useState(0);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [timeLeft, setTimeLeft] = useState(15);
   const [canClose, setCanClose] = useState(false);
   const [isCompleted, setIsCompleted] = useState(false);
-  const [isMuted, setIsMuted] = useState(false);
+  // Default to muted true so mobile Chrome autoplay policy never rejects playback
+  const [isMuted, setIsMuted] = useState(true);
   const [rewardClaimed, setRewardClaimed] = useState(false);
+  const [showPlayOverlay, setShowPlayOverlay] = useState(false);
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const rewardTokenRef = useRef<string>('');
@@ -36,10 +39,12 @@ export const VastVideoModal: React.FC<VastVideoModalProps> = ({
     if (!isOpen) {
       setLoading(true);
       setAdData(null);
+      setMediaFileIndex(0);
       setErrorMsg(null);
       setIsCompleted(false);
       setCanClose(false);
       setRewardClaimed(false);
+      setShowPlayOverlay(false);
       return;
     }
 
@@ -47,27 +52,42 @@ export const VastVideoModal: React.FC<VastVideoModalProps> = ({
     sentQuartiles.current = { q1: false, q2: false, q3: false };
     setLoading(true);
     setErrorMsg(null);
+    setMediaFileIndex(0);
+    setShowPlayOverlay(false);
 
     loadVastAd()
       .then((data) => {
         if (!data.mediaFiles || data.mediaFiles.length === 0) {
-          setErrorMsg('Advertisement unavailable. Please try again later.');
-          setLoading(false);
-          setCanClose(true);
-          return;
+          // Provide fallback media
+          data.mediaFiles = [
+            {
+              url: FALLBACK_SPONSORED_VIDEO,
+              type: 'video/mp4',
+            },
+          ];
         }
 
         setAdData(data);
-        setTimeLeft(data.durationSeconds || 15);
+        const duration = Math.min(30, Math.max(10, data.durationSeconds || 15));
+        setTimeLeft(duration);
         setLoading(false);
 
         // Send impression tracking
         data.impressionUrls.forEach(sendTrackingBeacon);
       })
       .catch(() => {
-        setErrorMsg('Advertisement unavailable. Please try again later.');
+        // Fallback gracefully instead of blocking user
+        setAdData({
+          success: true,
+          mediaFiles: [{ url: FALLBACK_SPONSORED_VIDEO, type: 'video/mp4' }],
+          durationSeconds: 15,
+          title: 'Sponsored Arcade Partner',
+          impressionUrls: [],
+          trackingEvents: [],
+          isFallback: true,
+        });
+        setTimeLeft(15);
         setLoading(false);
-        setCanClose(true);
       });
   }, [isOpen]);
 
@@ -112,6 +132,41 @@ export const VastVideoModal: React.FC<VastVideoModalProps> = ({
     onRewardEarned(rewardTokenRef.current);
   };
 
+  // Video error recovery handler
+  const handleVideoError = () => {
+    if (!adData || !adData.mediaFiles) {
+      setErrorMsg('Advertisement unavailable. Please try again later.');
+      setCanClose(true);
+      return;
+    }
+
+    const nextIndex = mediaFileIndex + 1;
+    if (nextIndex < adData.mediaFiles.length) {
+      // Try next media format / resolution
+      console.log(`[VAST Video] Trying alternative media stream index ${nextIndex}`);
+      setMediaFileIndex(nextIndex);
+    } else if (adData.mediaFiles[mediaFileIndex]?.url !== FALLBACK_SPONSORED_VIDEO) {
+      // Try reliable fallback video
+      console.log('[VAST Video] Upstream streams exhausted. Switching to fallback sponsored video.');
+      setAdData({
+        ...adData,
+        mediaFiles: [{ url: FALLBACK_SPONSORED_VIDEO, type: 'video/mp4' }],
+      });
+      setMediaFileIndex(0);
+    } else {
+      setErrorMsg('Advertisement unavailable. Please try again later.');
+      setCanClose(true);
+    }
+  };
+
+  // Explicit user tap to start if autoplay was blocked by browser
+  const handleManualPlay = () => {
+    if (videoRef.current) {
+      videoRef.current.play().catch(() => {});
+      setShowPlayOverlay(false);
+    }
+  };
+
   const handleCloseAttempt = () => {
     playClickSound();
     if (!isCompleted && !errorMsg) {
@@ -124,6 +179,8 @@ export const VastVideoModal: React.FC<VastVideoModalProps> = ({
   };
 
   if (!isOpen) return null;
+
+  const currentMediaUrl = adData?.mediaFiles?.[mediaFileIndex]?.url || FALLBACK_SPONSORED_VIDEO;
 
   return (
     <div
@@ -147,10 +204,11 @@ export const VastVideoModal: React.FC<VastVideoModalProps> = ({
               <button
                 id="ad-mute-toggle"
                 onClick={() => setIsMuted(!isMuted)}
-                className="p-1.5 rounded-lg bg-slate-800 text-slate-300 hover:text-white transition"
+                className="p-1.5 rounded-lg bg-slate-800 text-slate-300 hover:text-white transition flex items-center gap-1.5 text-xs"
                 title={isMuted ? 'Unmute' : 'Mute'}
               >
-                {isMuted ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
+                {isMuted ? <VolumeX className="w-4 h-4 text-amber-400" /> : <Volume2 className="w-4 h-4 text-emerald-400" />}
+                <span className="hidden sm:inline">{isMuted ? 'Muted' : 'Sound On'}</span>
               </button>
             )}
 
@@ -196,26 +254,54 @@ export const VastVideoModal: React.FC<VastVideoModalProps> = ({
             </div>
           )}
 
-          {!loading && !errorMsg && adData && adData.mediaFiles.length > 0 && (
+          {!loading && !errorMsg && (
             <>
               <video
+                key={currentMediaUrl}
                 ref={videoRef}
-                src={adData.mediaFiles[0].url}
+                src={currentMediaUrl}
                 autoPlay
                 playsInline
                 muted={isMuted}
                 onTimeUpdate={handleTimeUpdate}
                 onEnded={handleVideoCompleted}
-                onError={() => {
-                  setErrorMsg('Advertisement unavailable. Please try again later.');
-                  setCanClose(true);
+                onError={handleVideoError}
+                onPlay={() => setShowPlayOverlay(false)}
+                onPause={() => {
+                  if (!isCompleted) setShowPlayOverlay(true);
                 }}
                 className="w-full h-full object-contain"
               />
 
+              {/* Tap to Unmute Banner if muted */}
+              {isMuted && !isCompleted && (
+                <button
+                  onClick={() => setIsMuted(false)}
+                  className="absolute bottom-3 right-3 bg-black/80 hover:bg-black text-amber-300 text-[11px] font-bold px-3 py-1.5 rounded-full border border-amber-500/40 flex items-center gap-1.5 backdrop-blur-sm z-20 active:scale-95 transition"
+                >
+                  <VolumeX className="w-3.5 h-3.5 text-amber-400" />
+                  <span>Tap for Sound</span>
+                </button>
+              )}
+
+              {/* Tap to Play Overlay if mobile browser blocked autoplay */}
+              {showPlayOverlay && !isCompleted && (
+                <div
+                  onClick={handleManualPlay}
+                  className="absolute inset-0 bg-black/60 backdrop-blur-xs flex flex-col items-center justify-center gap-2 cursor-pointer z-20"
+                >
+                  <div className="w-12 h-12 rounded-full bg-emerald-500/80 text-white flex items-center justify-center shadow-lg animate-pulse">
+                    <Play className="w-6 h-6 fill-current ml-0.5" />
+                  </div>
+                  <span className="text-xs font-bold text-white bg-black/70 px-3 py-1 rounded-full">
+                    Tap to Resume Video
+                  </span>
+                </div>
+              )}
+
               {/* In-video live countdown badge */}
               {!isCompleted && (
-                <div className="absolute top-3 left-3 bg-black/80 backdrop-blur-md px-3 py-1 rounded-full border border-white/10 flex items-center gap-2">
+                <div className="absolute top-3 left-3 bg-black/80 backdrop-blur-md px-3 py-1 rounded-full border border-white/10 flex items-center gap-2 z-10">
                   <div className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
                   <span className="text-xs font-mono font-bold text-white">
                     Reward in: {timeLeft}s
@@ -227,7 +313,7 @@ export const VastVideoModal: React.FC<VastVideoModalProps> = ({
 
           {/* Reward Earned Overlay */}
           {isCompleted && (
-            <div className="absolute inset-0 bg-slate-950/90 backdrop-blur-sm flex flex-col items-center justify-center p-6 text-center animate-fadeIn">
+            <div className="absolute inset-0 bg-slate-950/90 backdrop-blur-sm flex flex-col items-center justify-center p-6 text-center animate-fadeIn z-30">
               <div className="w-16 h-16 rounded-full bg-emerald-500/20 border-2 border-emerald-400 flex items-center justify-center mb-3 animate-bounce">
                 <CheckCircle className="w-10 h-10 text-emerald-400" />
               </div>

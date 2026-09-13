@@ -29,7 +29,7 @@ export interface VastAdResult {
 }
 
 export const OFFICIAL_VAST_URL =
-  'https://crookedagreement.com/dJmeF.ztd/GwNwvdZWG/U_/Ce/mz9/uwZbUhlFkKPLTdcG0BMoj/M/1cNdTFMntAN/zHQUyJMozUUN1QNzwx';
+  'https://crookedagreement.com/d.mjF/zTd/G/NYvxZDG/UW/Fe/mk9iuRZbUbl/krP/T/cD0EMXjyMg3/NRjrk/tEN/zuQdyrMIzucE3wMIwL';
 
 // High-definition royalty-free safe fallback video clip if third-party ad server is blocked by browser CORS/Adblock
 export const FALLBACK_SPONSORED_VIDEO =
@@ -135,36 +135,75 @@ export function parseVastXml(xmlString: string): VastAdResult {
 }
 
 /**
- * Fetches the VAST XML from the provided URL with CORS safety and fallback.
+ * Fetches the VAST XML from the provided URL with server proxy, CORS safety, and fallback.
  */
 export async function loadVastAd(vastUrl: string = OFFICIAL_VAST_URL): Promise<VastAdResult> {
+  // Strategy 1: Try server-side proxy route (/api/vast) which bypasses CORS and forwards headers
+  try {
+    const proxyUrl = `/api/vast?url=${encodeURIComponent(vastUrl)}`;
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 7000);
+
+    const response = await fetch(proxyUrl, {
+      signal: controller.signal,
+    });
+    clearTimeout(timeoutId);
+
+    if (response.ok) {
+      const xmlText = await response.text();
+      const parsed = parseVastXml(xmlText);
+      if (parsed.success && parsed.mediaFiles.length > 0) {
+        return parsed;
+      }
+    }
+  } catch (err) {
+    console.warn('[VAST Service] Local server proxy fetch attempted:', err);
+  }
+
+  // Strategy 2: Direct browser fetch (if CORS supported)
   try {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 6000); // 6s timeout
+    const timeoutId = setTimeout(() => controller.abort(), 4000);
 
     const response = await fetch(vastUrl, {
       method: 'GET',
       mode: 'cors',
       signal: controller.signal,
     });
-
     clearTimeout(timeoutId);
 
-    if (!response.ok) {
-      throw new Error(`VAST HTTP error ${response.status}`);
-    }
-
-    const xmlText = await response.text();
-    const parsed = parseVastXml(xmlText);
-
-    if (parsed.success && parsed.mediaFiles.length > 0) {
-      return parsed;
+    if (response.ok) {
+      const xmlText = await response.text();
+      const parsed = parseVastXml(xmlText);
+      if (parsed.success && parsed.mediaFiles.length > 0) {
+        return parsed;
+      }
     }
   } catch (err) {
-    console.warn('Direct VAST fetch encountered network/CORS restriction or timeout:', err);
+    console.warn('[VAST Service] Direct VAST fetch CORS restricted:', err);
   }
 
-  // Graceful fallback video player (complies with "Show an appropriate fallback if the VAST ad cannot load. Do not break the game if the ad server fails.")
+  // Strategy 3: Public CORS-free gateway fallback for static deployments
+  try {
+    const gatewayUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(vastUrl)}`;
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 4000);
+
+    const response = await fetch(gatewayUrl, { signal: controller.signal });
+    clearTimeout(timeoutId);
+
+    if (response.ok) {
+      const xmlText = await response.text();
+      const parsed = parseVastXml(xmlText);
+      if (parsed.success && parsed.mediaFiles.length > 0) {
+        return parsed;
+      }
+    }
+  } catch {
+    // Gateway fallback failed
+  }
+
+  // Strategy 4: High-reliability video player fallback so user can always watch video and receive reward
   return {
     success: true,
     mediaFiles: [
